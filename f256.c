@@ -229,19 +229,19 @@ int gpoly_encrypt(
     while (len < blen) {
       c = reader(rdata);
       if ((eof = (c == EOF))) break;
-      P[len] = c;
-      ++len;
+      P[len++] = c;
     }
     if (len <= 4) break;
     slen += len - 4;
     *(uint32_t*)P = htole32(len - 4);
-    for (i = ((len + k - 1)/k)*k - 1; i >= len; --i) {
-      P[i] = random();
+    i = len;
+    len = (len + k - 1) / k;
+    while (i < len) {
+      P[i++] = random();
     }
     for (i = 0; i < n; ++i) {
       vwriter(i, v[i], wdata);
     }
-    len /= k;
     for (i = 0; i < len; ++i) {
       for (j = 0; j < n; ++j) {
         vwriter(j, gpoly_eval(k, P + k * i, v[j]), wdata);
@@ -300,7 +300,9 @@ int gpoly_decrypt(
     while (len > 0) {
       if ((eof = (vreader_to(n, ys, vreader, rdata) < 0))) break;
       gpoly_rev(k, v, ys, P);
-      nwriter(k, P, writer, wdata);
+      c = MIN(len, k);
+      nwriter(c, P, writer, wdata);
+      len -= c;
     }
   } while(!eof);
   return  slen - len;
