@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <assert.h>
+#include <endian.h>
 #include "defs.h"
 #include "f256.h"
 
@@ -172,13 +173,13 @@ void gpoly_rev(int k, const unsigned char *xs, const unsigned char *ys,
   }
 }
 
-// dim. in = k * len
-int gpoly_encrypt_iv(int k, int n, int len,
+void gpoly_encrypt_iv(int k, int n, int len,
                      unsigned char *in,
                      unsigned char v[], unsigned char *outs[]) {
   assert(k * (len/k) == len);
-  int idx = 0;
-  while (k * idx < len) {
+  unsigned char *ein = in + len;
+  int idx = 0, i;
+  while (in < ein) {
     for (i = 0; i < n; ++i) {
       outs[i][idx] = gpoly_eval(k, in, v[i]);
     }
@@ -187,18 +188,16 @@ int gpoly_encrypt_iv(int k, int n, int len,
   }
 }
 
-// dim. out = k * len
-int gpoly_decrypt_iv(int k, int n, int len,
+void gpoly_decrypt_iv(int k, int n, int len,
                      unsigned char *ins[],
                      unsigned char v[], unsigned char *out) {
-  char *xs = v;
-  char ys[k];
-  int idx = 0;
+  unsigned char ys[k];
+  int idx = 0, i;
   while (idx < len) {
     for (i = 0; i < k; ++i) {
       ys[i] = ins[i][idx];
     }
-    gpoly_rev(k, xs, ys, out);
+    gpoly_rev(k, v, ys, out);
     out += k;
     ++idx;
   }
@@ -207,7 +206,7 @@ int gpoly_decrypt_iv(int k, int n, int len,
 static inline void vwriter_to(
     int n, unsigned char v[],
     int (*vwriter)(int i, int c, void *d), void *data) {
-  int i, c;
+  int i;
   for (i = 0; i < n; ++i) {
     vwriter(i, v[i], data);
   }
@@ -220,6 +219,7 @@ int gpoly_encrypt(
     int (*vwriter)(int i, int c, void *d), void *wdata) {
   const int block = 1024;
   const int blen = block * k;
+  assert(blen >= 4);
   int i, j, c;
   unsigned char *P = xmalloc(blen);
   int slen = 0, len;
@@ -227,15 +227,15 @@ int gpoly_encrypt(
   do {
     len = 4;
     while (len < blen) {
-      c = reader(data);
-      if (eof = (c == EOF)) break;
+      c = reader(rdata);
+      if ((eof = (c == EOF))) break;
       P[len] = c;
       ++len;
     }
     if (len <= 4) break;
     slen += len - 4;
-    *(*uint32_t)P = htole32(len - 4);
-    for (i = len; i < blen && i % k; ++i) {
+    *(uint32_t*)P = htole32(len - 4);
+    for (i = ((len + k - 1)/k)*k - 1; i >= len; --i) {
       P[i] = random();
     }
     for (i = 0; i < n; ++i) {
@@ -256,7 +256,7 @@ int gpoly_encrypt(
   return slen;
 }
 
-static int vreader_to(int n, unsigned char v[],
+static inline int vreader_to(int n, unsigned char v[],
                       int (*vreader)(int i, void *d), void *data) {
   int i, c;
   for (i = 0; i < n; ++i) {
@@ -267,8 +267,8 @@ static int vreader_to(int n, unsigned char v[],
   return 1;
 }
 
-static void nwriter(int n, unsigned char *s,
-                    int (*writer)(int c, void *d), void *data) {
+static inline void nwriter(int n, unsigned char *s,
+                           int (*writer)(int c, void *d), void *data) {
   int i;
   for (i = 0; i < n; ++i) {
     writer(s[i], data);
@@ -284,24 +284,23 @@ int gpoly_decrypt(
   unsigned char P[MAX(k, 7)];
   unsigned char ys[n];
   int slen = 0;
-  int i, j, len, c, eof;
+  int j, len = 0, c, eof;
   do {
-    if (eof = (vreader_to(n, v, vreader, rdata) < 0)) break;
+    if ((eof = (vreader_to(n, v, vreader, rdata) < 0))) break;
     for (j = 0; j * k < 4; ++j) {
-      if (eof = (vreader_to(n, ys, vreader, rdata) < 0)) break;
+      if ((eof = (vreader_to(n, ys, vreader, rdata) < 0))) break;
       gpoly_rev(k, v, ys, P + j * k);
     }
     if (eof) break;
-    len = le32toh(*(*uint32_t)P);
+    len = le32toh(*(uint32_t*)P);
     slen += len;
     c = MIN(len, j * k - 4);
-    nwriter(c, P + 4, writer, data);
+    nwriter(c, P + 4, writer, wdata);
     len -= c;
     while (len > 0) {
-      if (eof = (vreader_to(n, ys, vreader, rdata) < 0)) break;
-      if (eof) break;
+      if ((eof = (vreader_to(n, ys, vreader, rdata) < 0))) break;
       gpoly_rev(k, v, ys, P);
-      nwriter(k, P, writer, data);
+      nwriter(k, P, writer, wdata);
     }
   } while(!eof);
   return  slen - len;
