@@ -120,7 +120,7 @@ static inline unsigned char gdiv(unsigned char n,  unsigned char q) {
   return g_rev_logs_table[s];
 }
 
-unsigned char poly_eval(int n, unsigned char *a, unsigned char x) {
+unsigned char gpoly_eval(int n, unsigned char *a, unsigned char x) {
   int i;
   unsigned char y = 0;
   for (i = n - 1; i >= 0; --i) {
@@ -129,7 +129,7 @@ unsigned char poly_eval(int n, unsigned char *a, unsigned char x) {
   return y;
 }
 
-unsigned char poly_interp(int k, unsigned char *xs, unsigned char *ys,
+unsigned char gpoly_interp(int k, unsigned char *xs, unsigned char *ys,
                           unsigned char x) {
   int i, j;
   unsigned char y = 0;
@@ -146,7 +146,7 @@ unsigned char poly_interp(int k, unsigned char *xs, unsigned char *ys,
 }
 
 // XXX: how to solve this in less than O(k^3)
-void poly_rev(int k, const unsigned char *xs, const unsigned char *ys,
+void gpoly_rev(int k, const unsigned char *xs, const unsigned char *ys,
               unsigned char *P) {
   assert(k > 0);
   int i, j, l;
@@ -155,8 +155,8 @@ void poly_rev(int k, const unsigned char *xs, const unsigned char *ys,
   unsigned char *Pi = tPi + 1;
   memset(P, 0, k);
   for (i = 0; i < k; ++i) {
-    memset(Pi + 1, 0, k - 1);
     Pi[0] = 1;
+    memset(Pi + 1, 0, k - 1);
     unsigned char weight = 1;
     for (j = 0; j < k; ++j) {
       if (j == i) continue;
@@ -170,4 +170,139 @@ void poly_rev(int k, const unsigned char *xs, const unsigned char *ys,
       P[l] = gadd(P[l], gmul(Pi[l], weight));
     }
   }
+}
+
+// dim. in = k * len
+int gpoly_encrypt_iv(int k, int n, int len,
+                     unsigned char *in,
+                     unsigned char v[], unsigned char *outs[]) {
+  assert(k * (len/k) == len);
+  int idx = 0;
+  while (k * idx < len) {
+    for (i = 0; i < n; ++i) {
+      outs[i][idx] = gpoly_eval(k, in, v[i]);
+    }
+    ++idx;
+    in += k;
+  }
+}
+
+// dim. out = k * len
+int gpoly_decrypt_iv(int k, int n, int len,
+                     unsigned char *ins[],
+                     unsigned char v[], unsigned char *out) {
+  char *xs = v;
+  char ys[k];
+  int idx = 0;
+  while (idx < len) {
+    for (i = 0; i < k; ++i) {
+      ys[i] = ins[i][idx];
+    }
+    gpoly_rev(k, xs, ys, out);
+    out += k;
+    ++idx;
+  }
+}
+
+static inline void vwriter_to(
+    int n, unsigned char v[],
+    int (*vwriter)(int i, int c, void *d), void *data) {
+  int i, c;
+  for (i = 0; i < n; ++i) {
+    vwriter(i, v[i], data);
+  }
+}
+
+int gpoly_encrypt(
+    int k, int n,
+    int (*reader)(void *d), void *rdata,
+    unsigned char v[/*n, updated by this function*/],
+    int (*vwriter)(int i, int c, void *d), void *wdata) {
+  const int block = 1024;
+  const int blen = block * k;
+  int i, j, c;
+  unsigned char *P = xmalloc(blen);
+  int slen = 0, len;
+  int eof = 0;
+  do {
+    len = 4;
+    while (len < blen) {
+      c = reader(data);
+      if (eof = (c == EOF)) break;
+      P[len] = c;
+      ++len;
+    }
+    if (len <= 4) break;
+    slen += len - 4;
+    *(*uint32_t)P = htole32(len - 4);
+    for (i = len; i < blen && i % k; ++i) {
+      P[i] = random();
+    }
+    for (i = 0; i < n; ++i) {
+      vwriter(i, v[i], wdata);
+    }
+    len /= k;
+    for (i = 0; i < len; ++i) {
+      for (j = 0; j < n; ++j) {
+        vwriter(j, gpoly_eval(k, P + k * i, v[j]), wdata);
+      }
+    }
+    c = random();
+    for (i = 0; i < n; ++i) {
+      v[i] += c;
+    }
+  } while (!eof);
+  xfree(P);
+  return slen;
+}
+
+static int vreader_to(int n, unsigned char v[],
+                      int (*vreader)(int i, void *d), void *data) {
+  int i, c;
+  for (i = 0; i < n; ++i) {
+    c = vreader(i, data);
+    if (c == EOF) return -1;
+    v[i] = c;
+  }
+  return 1;
+}
+
+static void nwriter(int n, unsigned char *s,
+                    int (*writer)(int c, void *d), void *data) {
+  int i;
+  for (i = 0; i < n; ++i) {
+    writer(s[i], data);
+  }
+}
+
+int gpoly_decrypt(
+    int k, int n,
+    int (*vreader)(int i, void *d), void *rdata,
+    unsigned char v[/*n*/],
+    int (*writer)(int c, void *d), void *wdata) {
+  assert(n >= k && k >= 1);
+  unsigned char P[MAX(k, 7)];
+  unsigned char ys[n];
+  int slen = 0;
+  int i, j, len, c, eof;
+  do {
+    if (eof = (vreader_to(n, v, vreader, rdata) < 0)) break;
+    for (j = 0; j * k < 4; ++j) {
+      if (eof = (vreader_to(n, ys, vreader, rdata) < 0)) break;
+      gpoly_rev(k, v, ys, P + j * k);
+    }
+    if (eof) break;
+    len = le32toh(*(*uint32_t)P);
+    slen += len;
+    c = MIN(len, j * k - 4);
+    nwriter(c, P + 4, writer, data);
+    len -= c;
+    while (len > 0) {
+      if (eof = (vreader_to(n, ys, vreader, rdata) < 0)) break;
+      if (eof) break;
+      gpoly_rev(k, v, ys, P);
+      nwriter(k, P, writer, data);
+    }
+  } while(!eof);
+  return  slen - len;
 }
