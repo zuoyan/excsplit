@@ -10,7 +10,7 @@ function gen_prefix_seq {
     done
 }
 
-for k in 2 3 4; do
+for k in 1 2 3 4 10 17; do
     for fn in "$@"; do
         rm -f /tmp/test-excsplit-*
         echo $EXCSPLIT $k $fn $(gen_prefix_seq /tmp/test-excsplit-split $(seq `echo $k+2|bc`))
