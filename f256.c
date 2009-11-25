@@ -5,6 +5,15 @@
 #include "defs.h"
 #include "f256.h"
 
+// polynomial x8 + x4 + x3 + x + 1.
+static inline unsigned char gadd(unsigned char a, unsigned char b) {
+  return a ^ b;
+}
+
+static inline unsigned char gsub(unsigned char a, unsigned char b) {
+  return a ^ b;
+}
+
 __attribute__((__unused__))
 static unsigned char gmul_cal(unsigned char a, unsigned char b) {
   unsigned char p = 0;
@@ -91,32 +100,24 @@ static unsigned char g_rev_logs_table[256] = {
   0x66, 0xb2, 0x76, 0x60, 0xda, 0xc5, 0xf3, 0xf6,
   0xaa, 0xcd, 0x9a, 0xa0, 0x75, 0x54, 0x0e, 0x01};
 
-unsigned char gmul(unsigned char a, unsigned char b) {
+static inline unsigned char gmul(unsigned char a, unsigned char b) {
   if (!a || !b) return 0;
   int s;
   s = g_logs_table[a] + g_logs_table[b];
-  if (s >= 255) s -= 255;
-  s = g_rev_logs_table[s];
-  return s;
+  if (s > 255) s -= 255;
+  return g_rev_logs_table[s];
 }
 
-unsigned char ginv(unsigned char in) {
+static inline unsigned char ginv(unsigned char in) {
   if(in == 0) return 0;
   else return g_rev_logs_table[255 - g_logs_table[in]];
 }
 
-unsigned char gdiv(unsigned char n,  unsigned char q) {
+static inline unsigned char gdiv(unsigned char n,  unsigned char q) {
   if (!n || !q) return 0;
   int s = 255 + g_logs_table[n] - g_logs_table[q];
-  if (s >= 255) s -= 255;
+  if (s > 255) s -= 255;
   return g_rev_logs_table[s];
-}
-
-void poly_randoms(unsigned char *x, int n) {
-  int i;
-  for (i = 0; i < n; ++i) {
-    x[i] = random();
-  }
 }
 
 unsigned char poly_eval(int n, unsigned char *a, unsigned char x) {
@@ -164,85 +165,9 @@ void poly_rev(int k, const unsigned char *xs, const unsigned char *ys,
         Pi[l] = gsub(Pi[l - 1], gmul(Pi[l], xs[j]));
       }
     }
-    mesg_assert(poly_eval(k, Pi, xs[i]) == weight, "i=%d", i);
     weight = gdiv(ys[i], weight);
     for (l = 0; l < k; ++l) {
       P[l] = gadd(P[l], gmul(Pi[l], weight));
     }
-  }
-}
-
-void scatter(int k, int n,
-             FILE *fin, FILE **fouts) {
-  unsigned char P[k];
-  int i, c = 0, j;
-  unsigned char xs[n];
-  int last_len = 0;
-  for (i = 0; i < n; ++i) {
-    do {
-      xs[i] = random();
-      for (j = MAX(0, i - 128); j < i; ++j) {
-        if (xs[i] == xs[j]) break;
-      }
-    } while (j < i);
-    fputc(xs[i], fouts[i]);
-  }
-  while (c != EOF) {
-    for (i = 0; i < k; ++i) {
-      c = fgetc(fin);
-      P[i] = c;
-      if (i > 0 && c == EOF) {
-        while (i < k) {
-          P[i++] = random();
-        }
-        break;
-      }
-    }
-    last_len = i;
-    if (last_len == 0) break;
-    for (i = 0; i < n; ++i) {
-      fputc(poly_eval(k, P, xs[i]), fouts[i]);
-      xs[i] = gadd(P[0], xs[i]);
-    }
-  }
-  for (i = 0; i < n; ++i) {
-    fputc(gadd(xs[i], last_len), fouts[i]);
-  }
-}
-
-void gather(int k, FILE **fins, FILE *fout) {
-  unsigned char xs[k];
-  unsigned char ls[k];
-  int i, c, last_len = k;
-  for (i = 0; i < k; ++i) {
-    if ((c = fgetc(fins[i])) == EOF) return;
-    xs[i] = c;
-    if ((c = fgetc(fins[i])) == EOF) return;
-    ls[i] = c;
-  }
-  unsigned char als[k];
-  unsigned char P[k];
-  unsigned char *ys = ls, *ays = als;
-  while (1) {
-    SWAP(ys, ays);
-    for (i = 0; i < k; ++i) {
-      c = fgetc(fins[i]);
-      if (c == EOF) break;
-      ays[i] = c;
-    }
-    if (c == EOF) break;
-    // re-construct the polynomial P
-    poly_rev(k, xs, ys, P);
-    for (i = 0; i < k; ++i) {
-      xs[i] = gadd(xs[i], P[0]);
-    }
-    // check whether ays is the last bytes, if, set last_len
-    c = fgetc(fins[0]);
-    if (c != EOF) {
-      ungetc(c, fins[0]);
-    } else {
-      last_len = gsub(ays[0], xs[0]);
-    }
-    fwrite(P, sizeof(P[0]), last_len, fout);
   }
 }
